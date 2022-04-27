@@ -2,7 +2,7 @@ package io.pixee.librisk;
 
 import java.io.IOException;
 
-public class DoesSystemCommands {
+final class DoesSystemCommands {
 
   void doesRuntimeExec() throws IOException {
     Runtime.getRuntime().exec("foo");

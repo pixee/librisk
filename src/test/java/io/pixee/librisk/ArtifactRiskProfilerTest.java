@@ -1,5 +1,6 @@
 package io.pixee.librisk;
 
+import static org.hamcrest.CoreMatchers.hasItems;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -14,9 +15,13 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.apache.commons.io.FileUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.ClassNode;
 
@@ -33,8 +38,102 @@ final class ArtifactRiskProfilerTest {
   }
 
   @Test
-  void it_analyzes_system_commands_jar() throws IOException {
-    String jarEntryPath = DoesSystemCommands.class.getName().replace('.', '/') + ".class";
+  void it_scans_jar() throws IOException {
+    File struts2Jar = new File("target/spring-web.jar");
+    assertThat(struts2Jar.exists(), is(true));
+
+    ArtifactRiskProfiler profiler = ArtifactRiskProfiler.createDefault();
+    ArtifactRiskProfile profile = profiler.profile(struts2Jar);
+    assertThat(profile.riskyBehaviors(), hasItems());
+    assertThat(profile.failedClasses(), hasItems());
+  }
+
+  private static Stream<Arguments> systemCommandsArguments() {
+    return Stream.of(
+        Arguments.of(
+            DoesSystemCommands.class,
+            List.of(
+                behavior(
+                    Behavior.SYSTEM_COMMANDS,
+                    withinMethod(
+                        DoesSystemCommands.class, "doesRuntimeExec", "void", List.of(), 8, 8),
+                    withInvocation(
+                        "java/lang/Runtime", "exec", "(Ljava/lang/String;)Ljava/lang/Process;")),
+                behavior(
+                    Behavior.SYSTEM_COMMANDS,
+                    withinMethod(
+                        DoesSystemCommands.class,
+                        "doesProcessBuilderInit",
+                        "void",
+                        List.of(),
+                        12,
+                        12),
+                    withInvocation("java/lang/ProcessBuilder", "<init>", "([Ljava/lang/String;)V")),
+                behavior(
+                    Behavior.SYSTEM_COMMANDS,
+                    withinMethod(
+                        DoesSystemCommands.class,
+                        "doesProcessBuilderStart",
+                        "void",
+                        List.of("java.lang.ProcessBuilder"),
+                        16,
+                        16),
+                    withInvocation("java/lang/ProcessBuilder", "start", "()Ljava/lang/Process;")),
+                behavior(
+                    Behavior.SYSTEM_COMMANDS,
+                    withinMethod(
+                        DoesSystemCommands.class,
+                        "doesProcessBuilderCommand",
+                        "void",
+                        List.of("int", "java.lang.ProcessBuilder"),
+                        20,
+                        20),
+                    withInvocation("java/lang/ProcessBuilder", "command", "()Ljava/util/List;")))),
+        Arguments.of(
+            DoesDeserialization.class,
+            List.of(
+                behavior(
+                    Behavior.DESERIALIZATION,
+                    withinMethod(
+                        DoesDeserialization.class,
+                        "doesReadObject",
+                        "void",
+                        List.of("java.io.ObjectInputStream"),
+                        9,
+                        9),
+                    withInvocation(
+                        "java/io/ObjectInputStream", "readObject", "()Ljava/lang/Object;")),
+                behavior(
+                    Behavior.DESERIALIZATION,
+                    withinMethod(
+                        DoesDeserialization.class,
+                        "doesDefaultReadObject",
+                        "void",
+                        List.of("java.io.ObjectInputStream"),
+                        14,
+                        15),
+                    withInvocation("java/io/ObjectInputStream", "defaultReadObject", "()V")),
+                behavior(
+                    Behavior.DESERIALIZATION,
+                    withinMethod(
+                        DoesDeserialization.class,
+                        "doesKryo",
+                        "void",
+                        List.of("com.esotericsoftware.kryo.Kryo"),
+                        19,
+                        19),
+                    withInvocation(
+                        "com/esotericsoftware/kryo/Kryo",
+                        "readObject",
+                        "(Lcom/esotericsoftware/kryo/io/Input;Ljava/lang/Class;)Ljava/lang/Object;")))));
+  }
+
+  @ParameterizedTest
+  @MethodSource("systemCommandsArguments")
+  void it_analyzes_system_commands(
+      final Class<?> testClass, final List<BinaryBehaviorFound> expectedBehaviors)
+      throws IOException {
+    String jarEntryPath = testClass.getName().replace('.', '/') + ".class";
     String classFilePath = "target/test-classes/" + jarEntryPath;
     File classFile = new File(classFilePath);
     ClassEntry entry = toClassEntry(classFile, jarEntryPath);
@@ -45,69 +144,7 @@ final class ArtifactRiskProfilerTest {
 
     Set<BinaryBehaviorFound> riskyBehaviors = profile.riskyBehaviors();
 
-    MethodDescriptor doesRuntimeExecMethod =
-        new MethodDescriptor("doesRuntimeExec", "void", List.of(), Optional.of(8));
-    MethodInvocation runtimeExecMethod =
-        new MethodInvocation(
-            "java/lang/Runtime", "exec", "(Ljava/lang/String;)Ljava/lang/Process;");
-    Optional<Integer> runtimeExecLine = Optional.of(8);
-
-    MethodDescriptor doesProcessBuilderInitMethod =
-        new MethodDescriptor("doesProcessBuilderInit", "void", List.of(), Optional.of(12));
-    MethodInvocation processBuilderInitMethod =
-        new MethodInvocation("java/lang/ProcessBuilder", "<init>", "([Ljava/lang/String;)V");
-    Optional<Integer> processBuilderInitLine = Optional.of(12);
-
-    MethodDescriptor doesProcessBuilderStartMethod =
-        new MethodDescriptor(
-            "doesProcessBuilderStart",
-            "void",
-            List.of("java.lang.ProcessBuilder"),
-            Optional.of(16));
-    MethodInvocation processBuilderStartMethod =
-        new MethodInvocation("java/lang/ProcessBuilder", "start", "()Ljava/lang/Process;");
-    Optional<Integer> processBuilderStartLine = Optional.of(16);
-
-    MethodDescriptor doesProcessBuilderCommandMethod =
-        new MethodDescriptor(
-            "doesProcessBuilderCommand",
-            "void",
-            List.of("int", "java.lang.ProcessBuilder"),
-            Optional.of(20));
-    MethodInvocation processBuilderCommandMethod =
-        new MethodInvocation("java/lang/ProcessBuilder", "command", "()Ljava/util/List;");
-    Optional<Integer> processBuilderCommandLine = Optional.of(20);
-
-    assertThat(
-        riskyBehaviors.contains(
-            new BinaryBehaviorFound(
-                Behavior.SYSTEM_COMMANDS,
-                new BinaryLocation(jarEntryPath, doesRuntimeExecMethod, runtimeExecLine),
-                runtimeExecMethod)),
-        is(true));
-
-    BinaryBehaviorFound processBuilderInitBehavior =
-        new BinaryBehaviorFound(
-            Behavior.SYSTEM_COMMANDS,
-            new BinaryLocation(jarEntryPath, doesProcessBuilderInitMethod, processBuilderInitLine),
-            processBuilderInitMethod);
-    assertThat(riskyBehaviors.contains(processBuilderInitBehavior), is(true));
-    assertThat(
-        riskyBehaviors.contains(
-            new BinaryBehaviorFound(
-                Behavior.SYSTEM_COMMANDS,
-                new BinaryLocation(
-                    jarEntryPath, doesProcessBuilderStartMethod, processBuilderStartLine),
-                processBuilderStartMethod)),
-        is(true));
-
-    BinaryBehaviorFound processBuilderCommandBehavior =
-        new BinaryBehaviorFound(
-            Behavior.SYSTEM_COMMANDS,
-            new BinaryLocation(
-                jarEntryPath, doesProcessBuilderCommandMethod, processBuilderCommandLine),
-            processBuilderCommandMethod);
-    assertThat(riskyBehaviors.contains(processBuilderCommandBehavior), is(true));
+    assertThat(riskyBehaviors, hasItems(expectedBehaviors.toArray(new BinaryBehaviorFound[0])));
   }
 
   ClassEntry toClassEntry(final File classFile, final String jarEntryPath) throws IOException {
@@ -116,5 +153,32 @@ final class ArtifactRiskProfilerTest {
     ClassNode node = new ClassNode();
     reader.accept(node, 0);
     return new ClassEntry(node, jarEntryPath);
+  }
+
+  /**
+   * These are a collection of silly little builders that just reduce keystrokes to create all the
+   * domain objects we need in the tests.
+   */
+  private static BinaryBehaviorFound behavior(
+      Behavior behavior, BinaryLocation location, MethodInvocation methodInvocation) {
+    return new BinaryBehaviorFound(behavior, location, methodInvocation);
+  }
+
+  private static BinaryLocation withinMethod(
+      final Class type,
+      final String methodName,
+      final String returnType,
+      final List<String> argTypes,
+      final int methodStartLineNumber,
+      final int instructionLineNumber) {
+    return new BinaryLocation(
+        type.getName().replace('.', '/') + ".class",
+        new MethodDescriptor(methodName, returnType, argTypes, Optional.of(methodStartLineNumber)),
+        Optional.of(instructionLineNumber));
+  }
+
+  private static MethodInvocation withInvocation(
+      final String owner, final String name, final String desc) {
+    return new MethodInvocation(owner, name, desc);
   }
 }

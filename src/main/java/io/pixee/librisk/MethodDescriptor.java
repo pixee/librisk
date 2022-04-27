@@ -9,6 +9,7 @@ import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodNode;
 
+/** Describes a method within a class (_not_ a method invocation instruction.) */
 record MethodDescriptor(
     String name, String returnType, List<String> argumentTypes, Optional<Integer> firstLine) {
 

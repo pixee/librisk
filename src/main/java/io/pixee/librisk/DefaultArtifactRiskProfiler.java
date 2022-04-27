@@ -40,7 +40,7 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
   interface JarReader {
     Optional<ClassEntry> nextClassNode() throws IOException;
 
-    List<String> getFailedClasses();
+    Set<String> getFailedClasses();
   }
 
   DefaultArtifactRiskProfiler() {
@@ -84,12 +84,20 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
         // deserialization
         new TypeAndMethodInvocationPredicate(
             Behavior.DESERIALIZATION, "java/io/ObjectInputStream", "readObject"),
-        new TypeAndMethodInvocationPredicate(Behavior.DESERIALIZATION, "Kryo", "readObject"),
-        new TypeAndMethodInvocationPredicate(Behavior.DESERIALIZATION, "XStream", "fromXML"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.DESERIALIZATION, "java/io/ObjectInputStream", "defaultReadObject"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.DESERIALIZATION, "Kryo", Set.of(CONTAINS), "readObject", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.DESERIALIZATION, "XStream", Set.of(CONTAINS), "fromXML", Set.of()),
 
         // native operations
         new TypeAndMethodInvocationPredicate(
-            Behavior.NATIVE_OPERATION, ".Unsafe", Set.of(CONTAINS), ".", Set.of()),
+            Behavior.NATIVE_OPERATION, "sun.misc.Unsafe", "getUnsafe"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.NATIVE_OPERATION, "jdk.unsupported.Unsafe", "getUnsafe"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.NATIVE_OPERATION, "jdk.internal.misc.Unsafe", "getUnsafe"),
         new TypeAndMethodInvocationPredicate(
             Behavior.NATIVE_OPERATION, "java/lang/System", "loadLibrary"),
 
@@ -131,12 +139,12 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
 
     private final Enumeration<JarEntry> entries;
     private final JarFile jarFile;
-    private final List<String> failedClasses;
+    private final Set<String> failedClasses;
 
     private DefaultJarReader(final File binary) throws IOException {
       this.jarFile = new JarFile(binary);
       this.entries = jarFile.entries();
-      this.failedClasses = new ArrayList<>();
+      this.failedClasses = new HashSet<>();
     }
 
     private ClassNode readClassNode(final InputStream inputStream) throws IOException {
@@ -162,7 +170,7 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
     }
 
     @Override
-    public List<String> getFailedClasses() {
+    public Set<String> getFailedClasses() {
       return failedClasses;
     }
   }
@@ -171,7 +179,6 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
 
   @Override
   public ArtifactRiskProfile profile(final File binary) throws IOException {
-    Set<String> failedClasses = new HashSet<>();
     Set<BinaryBehaviorFound> riskyBehaviors = new HashSet<>();
     JarReader jarReader = jarLoader.load(binary);
     Optional<ClassEntry> classEntryRef;
@@ -199,7 +206,8 @@ final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
             });
       }
     }
-    return new DefaultArtifactRiskProfile(riskyBehaviors, failedClasses);
+
+    return new DefaultArtifactRiskProfile(riskyBehaviors, jarReader.getFailedClasses());
   }
 
   private MethodInvocation toMethodInvocation(final MethodInsnNode methodInsn) {

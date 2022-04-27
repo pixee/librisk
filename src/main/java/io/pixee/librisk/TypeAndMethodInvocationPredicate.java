@@ -47,9 +47,9 @@ public final class TypeAndMethodInvocationPredicate implements InvocationPredica
       }
     }
     if (nameMatchingOptions.contains(MatchingOptions.CONTAINS)) {
-      return name.contains(method.name.toLowerCase());
+      return name.contains(method.name);
     }
-    return name.equals(method.name.toLowerCase());
+    return method.name.equals(name);
   }
 
   private boolean checkOwner(final MethodInsnNode method) {
@@ -61,9 +61,9 @@ public final class TypeAndMethodInvocationPredicate implements InvocationPredica
       }
     }
     if (ownerMatchingOptions.contains(MatchingOptions.CONTAINS)) {
-      return owner.contains(method.owner.toLowerCase());
+      return method.owner.contains(owner);
     }
-    return owner.equals(method.owner);
+    return method.owner.equals(owner);
   }
 
   @Override
