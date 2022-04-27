@@ -52,6 +52,7 @@
         <versions.javaparser>3.24.2</versions.javaparser>
         <versions.log4j>2.17.1</versions.log4j>
         <versions.mockito>4.0.0</versions.mockito>
+        <versions.commons-io>2.11.0</versions.commons-io>
     </properties>
 
     <dependencies>
@@ -64,6 +65,11 @@
             <groupId>org.ow2.asm</groupId>
             <artifactId>asm-tree</artifactId>
             <version>${versions.asm}</version>
+        </dependency>
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>${versions.commons-io}</version>
         </dependency>
         <dependency>
             <groupId>com.github.javaparser</groupId>

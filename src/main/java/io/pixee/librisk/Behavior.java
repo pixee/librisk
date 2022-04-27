@@ -2,7 +2,12 @@ package io.pixee.librisk;
 
 public enum Behavior {
   BASE64,
-  ZIP,
+  COMPILATION,
   DESERIALIZATION,
-  USER_INPUT,
+  NATIVE_OPERATION,
+  OUTBOUND_HTTP,
+  NETWORK,
+  SECURITY_OPERATION,
+  SYSTEM_COMMANDS,
+  ZIP;
 }

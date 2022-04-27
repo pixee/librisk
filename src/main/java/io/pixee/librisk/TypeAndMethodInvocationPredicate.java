@@ -2,15 +2,9 @@ package io.pixee.librisk;
 
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Predicate;
 import org.objectweb.asm.tree.MethodInsnNode;
 
-public final class MethodInvocationPredicate implements Predicate<MethodInsnNode> {
-
-  public enum MatchingOptions {
-    CASE_INSENSITIVE,
-    CONTAINS
-  }
+public final class TypeAndMethodInvocationPredicate implements InvocationPredicate {
 
   private final Behavior behavior;
   private final String name;
@@ -18,7 +12,7 @@ public final class MethodInvocationPredicate implements Predicate<MethodInsnNode
   private final Set<MatchingOptions> ownerMatchingOptions;
   private final Set<MatchingOptions> nameMatchingOptions;
 
-  MethodInvocationPredicate(
+  TypeAndMethodInvocationPredicate(
       final Behavior behavior,
       final String owner,
       final Set<MatchingOptions> ownerMatchingOptions,
@@ -29,6 +23,10 @@ public final class MethodInvocationPredicate implements Predicate<MethodInsnNode
     this.name = Objects.requireNonNull(name);
     this.ownerMatchingOptions = Objects.requireNonNull(ownerMatchingOptions);
     this.nameMatchingOptions = Objects.requireNonNull(nameMatchingOptions);
+  }
+
+  TypeAndMethodInvocationPredicate(final Behavior behavior, final String owner, final String name) {
+    this(behavior, owner, Set.of(), name, Set.of());
   }
 
   @Override
@@ -65,10 +63,11 @@ public final class MethodInvocationPredicate implements Predicate<MethodInsnNode
     if (ownerMatchingOptions.contains(MatchingOptions.CONTAINS)) {
       return owner.contains(method.owner.toLowerCase());
     }
-    return owner.equals(method.owner.toLowerCase());
+    return owner.equals(method.owner);
   }
 
-  Behavior getBehavior() {
+  @Override
+  public Behavior getBehavior() {
     return behavior;
   }
 }

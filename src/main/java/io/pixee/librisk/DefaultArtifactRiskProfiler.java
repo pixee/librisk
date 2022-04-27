@@ -1,7 +1,7 @@
 package io.pixee.librisk;
 
-import static io.pixee.librisk.MethodInvocationPredicate.MatchingOptions.CASE_INSENSITIVE;
-import static io.pixee.librisk.MethodInvocationPredicate.MatchingOptions.CONTAINS;
+import static io.pixee.librisk.MatchingOptions.CASE_INSENSITIVE;
+import static io.pixee.librisk.MatchingOptions.CONTAINS;
 
 import com.google.common.io.ByteStreams;
 import java.io.File;
@@ -29,81 +29,181 @@ import org.objectweb.asm.tree.MethodNode;
 
 final class DefaultArtifactRiskProfiler implements ArtifactRiskProfiler {
 
-  private final Set<MethodInvocationPredicate> riskyBehaviorPredicates;
+  private final JarLoader jarLoader;
+  private final Set<InvocationPredicate> riskyBehaviorPredicates;
+
+  /** A set of seams for reading jars. */
+  interface JarLoader {
+    JarReader load(File file) throws IOException;
+  }
+
+  interface JarReader {
+    Optional<ClassEntry> nextClassNode() throws IOException;
+
+    List<String> getFailedClasses();
+  }
 
   DefaultArtifactRiskProfiler() {
+    this(new DefaultJarLoader());
+  }
+
+  DefaultArtifactRiskProfiler(final JarLoader jarLoader) {
+    this.jarLoader = Objects.requireNonNull(jarLoader);
     this.riskyBehaviorPredicates = buildRiskyBehaviorPredicates();
   }
 
-  private Set<MethodInvocationPredicate> buildRiskyBehaviorPredicates() {
+  private Set<InvocationPredicate> buildRiskyBehaviorPredicates() {
     return Set.of(
-        new MethodInvocationPredicate(
+
+        // base64
+        new TypeAndMethodInvocationPredicate(
             Behavior.BASE64,
             "base64",
             Set.of(CONTAINS, CASE_INSENSITIVE),
             "decode",
             Set.of(CONTAINS, CASE_INSENSITIVE)),
-        new MethodInvocationPredicate(
+        new TypeAndMethodInvocationPredicate(
             Behavior.BASE64,
             "base64",
             Set.of(CONTAINS, CASE_INSENSITIVE),
             "encode",
             Set.of(CONTAINS, CASE_INSENSITIVE)),
-        new MethodInvocationPredicate(
-            Behavior.DESERIALIZATION,
-            "java/io/ObjectInputStream",
-            Set.of(),
-            "readObject",
-            Set.of()));
+
+        // compilation
+        new MethodOnlyMethodInvocationPredicate(Behavior.COMPILATION, "defineClass"),
+        new MethodOnlyMethodInvocationPredicate(Behavior.COMPILATION, "parseExpression"),
+        new MethodOnlyMethodInvocationPredicate(
+            Behavior.COMPILATION, "evaluateExpression", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.COMPILATION, "java/lang/Instrumentation", "redefineClass"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.COMPILATION, "java/lang/Instrumentation", "retransformClass"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.COMPILATION, "java/lang/Instrumentation", "appendToBootstrap"),
+
+        // deserialization
+        new TypeAndMethodInvocationPredicate(
+            Behavior.DESERIALIZATION, "java/io/ObjectInputStream", "readObject"),
+        new TypeAndMethodInvocationPredicate(Behavior.DESERIALIZATION, "Kryo", "readObject"),
+        new TypeAndMethodInvocationPredicate(Behavior.DESERIALIZATION, "XStream", "fromXML"),
+
+        // native operations
+        new TypeAndMethodInvocationPredicate(
+            Behavior.NATIVE_OPERATION, ".Unsafe", Set.of(CONTAINS), ".", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.NATIVE_OPERATION, "java/lang/System", "loadLibrary"),
+
+        // outbound calls
+        new TypeAndMethodInvocationPredicate(
+            Behavior.OUTBOUND_HTTP, "java/net/URLConnection", "open"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.OUTBOUND_HTTP, "HttpClient", Set.of(CONTAINS), "open", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.OUTBOUND_HTTP, "HttpClient", Set.of(CONTAINS), "newBuilder", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.OUTBOUND_HTTP, "OkHttpClient", Set.of(CONTAINS), "newBuilder", Set.of()),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.OUTBOUND_HTTP, "OkHttpClient$Builder", Set.of(CONTAINS), "<init>", Set.of()),
+
+        // security
+        new TypeAndMethodInvocationPredicate(
+            Behavior.SECURITY_OPERATION, "java/lang/System", "setSecurityManager"),
+
+        // system commands
+        new TypeAndMethodInvocationPredicate(Behavior.SYSTEM_COMMANDS, "java/lang/Runtime", "exec"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.SYSTEM_COMMANDS, "java/lang/ProcessBuilder", "command"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.SYSTEM_COMMANDS, "java/lang/ProcessBuilder", "start"),
+        new TypeAndMethodInvocationPredicate(
+            Behavior.SYSTEM_COMMANDS, "java/lang/ProcessBuilder", "<init>"),
+        new MethodOnlyMethodInvocationPredicate(Behavior.ZIP, "zip", Set.of(CONTAINS)));
   }
+
+  private static class DefaultJarLoader implements JarLoader {
+    @Override
+    public JarReader load(final File file) throws IOException {
+      return new DefaultJarReader(file);
+    }
+  }
+
+  private static class DefaultJarReader implements JarReader {
+
+    private final Enumeration<JarEntry> entries;
+    private final JarFile jarFile;
+    private final List<String> failedClasses;
+
+    private DefaultJarReader(final File binary) throws IOException {
+      this.jarFile = new JarFile(binary);
+      this.entries = jarFile.entries();
+      this.failedClasses = new ArrayList<>();
+    }
+
+    private ClassNode readClassNode(final InputStream inputStream) throws IOException {
+      byte[] bytes = Objects.requireNonNull(ByteStreams.toByteArray(inputStream));
+      ClassReader reader = new ClassReader(bytes);
+      ClassNode classNode = new ClassNode();
+      reader.accept(classNode, 0);
+      return classNode;
+    }
+
+    @Override
+    public Optional<ClassEntry> nextClassNode() throws IOException {
+      while (entries.hasMoreElements()) {
+        JarEntry jarEntry = entries.nextElement();
+        if (jarEntry.getName().endsWith(".class")) {
+          try (InputStream inputStream = jarFile.getInputStream(jarEntry)) {
+            ClassNode classNode = readClassNode(inputStream);
+            return Optional.of(new ClassEntry(classNode, jarEntry.getName()));
+          }
+        }
+      }
+      return Optional.empty();
+    }
+
+    @Override
+    public List<String> getFailedClasses() {
+      return failedClasses;
+    }
+  }
+
+  record ClassEntry(ClassNode classNode, String jarEntryPath) {}
 
   @Override
   public ArtifactRiskProfile profile(final File binary) throws IOException {
-
     Set<String> failedClasses = new HashSet<>();
-
     Set<BinaryBehaviorFound> riskyBehaviors = new HashSet<>();
-
-    JarFile jarFile = new JarFile(binary);
-    Enumeration<JarEntry> entries = jarFile.entries();
-    LOG.info("Reading entries");
-    while (entries.hasMoreElements()) {
-      JarEntry jarEntry = entries.nextElement();
-      LOG.info("Looking at: {}", jarEntry.getName());
-      if (jarEntry.getName().endsWith(".class")) {
-        try (InputStream inputStream = jarFile.getInputStream(jarEntry)) {
-          byte[] bytes = Objects.requireNonNull(ByteStreams.toByteArray(inputStream));
-          ClassReader reader = new ClassReader(bytes);
-          ClassNode classNode = new ClassNode();
-          reader.accept(classNode, 0);
-
-          for (MethodNode method : classNode.methods) {
-            List<MethodInsnNode> methodInsns = findAll(method.instructions, MethodInsnNode.class);
-            methodInsns.forEach(
-                invokeMethodInsn -> {
-                  MethodDescriptor methodDescriptor =
-                      MethodDescriptor.from(method, invokeMethodInsn);
-                  for (MethodInvocationPredicate predicate : riskyBehaviorPredicates) {
-                    if (predicate.test(invokeMethodInsn)) {
-                      riskyBehaviors.add(
-                          new BinaryBehaviorFound(
-                              predicate.getBehavior(),
-                              new BinaryLocation(
-                                  jarEntry.getName(),
-                                  methodDescriptor,
-                                  findLineNumberForInstruction(
-                                      method.instructions, invokeMethodInsn))));
-                    }
-                  }
-                });
-          }
-        } catch (IOException e) {
-          failedClasses.add(jarEntry.getName());
-          LOG.error("Problem reading {}", jarEntry.getName(), e);
-        }
+    JarReader jarReader = jarLoader.load(binary);
+    Optional<ClassEntry> classEntryRef;
+    while ((classEntryRef = jarReader.nextClassNode()).isPresent()) {
+      ClassEntry classEntry = classEntryRef.get();
+      ClassNode classNode = classEntry.classNode();
+      for (MethodNode method : classNode.methods) {
+        List<MethodInsnNode> methodInsns = findAll(method.instructions, MethodInsnNode.class);
+        methodInsns.forEach(
+            invokeMethodInsn -> {
+              MethodDescriptor containingMethodDescriptor = MethodDescriptor.from(method);
+              for (InvocationPredicate predicate : riskyBehaviorPredicates) {
+                if (predicate.test(invokeMethodInsn)) {
+                  LOG.info("Found risky behavior in {}", containingMethodDescriptor);
+                  riskyBehaviors.add(
+                      new BinaryBehaviorFound(
+                          predicate.getBehavior(),
+                          new BinaryLocation(
+                              classEntry.jarEntryPath(),
+                              containingMethodDescriptor,
+                              findLineNumberForInstruction(method.instructions, invokeMethodInsn)),
+                          toMethodInvocation(invokeMethodInsn)));
+                }
+              }
+            });
       }
     }
     return new DefaultArtifactRiskProfile(riskyBehaviors, failedClasses);
+  }
+
+  private MethodInvocation toMethodInvocation(final MethodInsnNode methodInsn) {
+    return new MethodInvocation(methodInsn.owner, methodInsn.name, methodInsn.desc);
   }
 
   /**
